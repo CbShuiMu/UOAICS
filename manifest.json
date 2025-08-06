@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "UOA Course Calendar Exporter",
+  "version": "1.0.0",
+  "description": "Export University of Auckland course information to ICS calendar format",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "downloads"
+  ],
+  "host_permissions": [
+    "https://www.student.auckland.ac.nz/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "UOA Course Exporter"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.student.auckland.ac.nz/*"],
+      "js": ["content.js"],
+      "run_at": "document_end"
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+} 
