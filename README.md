@@ -26,6 +26,8 @@ A Chrome browser extension for extracting course information from the University
 1. **Visit University of Auckland Student Portal**
    - Login to https://www.student.auckland.ac.nz/
    - Navigate to the course calendar page
+   - or
+   - Just go to https://www.student.auckland.ac.nz/psc/ps/EMPLOYEE/SA/c/UOA_MENU_FL.UOA_VW_CAL_FL.GBL (Weekly Calendar View and 12 hour)
 
 2. **Extract Course Information**
    - Click the extension icon in the Chrome toolbar
