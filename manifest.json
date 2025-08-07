@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "UOA Course Calendar Exporter",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Export University of Auckland course information to ICS calendar format",
   "permissions": [
     "activeTab",
