@@ -3,17 +3,29 @@ console.log('UOA Course Exporter: Content script loaded');
 
 // Listen for messages from popup
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    console.log('Content script received message:', request);
+    
     if (request.action === 'extractCourses') {
-        const courses = extractCourseData();
-        sendResponse({ success: true, courses: courses });
-    } else if (request.action === 'debugPageStructure') {
-        const debugInfo = debugPageStructure();
-        sendResponse({ success: true, debugInfo: debugInfo });
+        try {
+            const courses = extractCourseData();
+            console.log('Extracted courses:', courses);
+            sendResponse({ success: true, courses: courses });
+        } catch (error) {
+            console.error('Error in extractCourseData:', error);
+            sendResponse({ success: false, error: error.message });
+        }
+    } else {
+        sendResponse({ success: false, error: 'Unknown action' });
     }
+    
+    // Return true to indicate we will send a response asynchronously
+    return true;
 });
 
 // Extract course data function
 function extractCourseData() {
+    console.log('Starting course extraction...');
+    
     const courses = [];
     const seenCourses = new Set(); // For deduplication
     
@@ -22,19 +34,32 @@ function extractCourseData() {
     
     // Find course tables - more precise selector
     const courseTables = document.querySelectorAll('table.uoa_gridborder_cal');
+    console.log('Found course tables:', courseTables.length);
     
-    courseTables.forEach(table => {
+    if (courseTables.length === 0) {
+        console.log('No course tables found. Available tables:', document.querySelectorAll('table'));
+    }
+    
+    courseTables.forEach((table, tableIndex) => {
+        console.log(`Processing table ${tableIndex + 1}`);
+        
         // Record course occupancy for each time slot
         const timeSlotOccupancy = new Map(); // Store time slot to occupied td count mapping
         
         // Process each row of data
         const rows = table.querySelectorAll('tr');
+        console.log(`Table ${tableIndex + 1} has ${rows.length} rows`);
         
-        rows.forEach(tr => {
+        rows.forEach((tr, rowIndex) => {
             const rowCourses = processTableRowWithOccupancy(tr, weekDays, seenCourses, timeSlotOccupancy);
+            if (rowCourses.length > 0) {
+                console.log(`Row ${rowIndex + 1} found ${rowCourses.length} courses`);
+            }
             courses.push(...rowCourses);
         });
     });
+    
+    console.log(`Total courses found: ${courses.length}`);
     
     // Sort by course code and time
     courses.sort((a, b) => {
@@ -94,20 +119,52 @@ function extractHeaderMap(table) {
 function processTableRowWithOccupancy(tr, weekDays, seenCourses, timeSlotOccupancy) {
     const rowCourses = [];
     const tds = tr.querySelectorAll('td');
-    let dayIdx = -1;
     
     // Get current row time information
     const timeCell = tr.querySelector('td.uoa_timecol_cal span');
     const currentTime = timeCell ? timeCell.textContent.trim() : '';
     
-    // Calculate the starting weekday for current row
-    // Each tr should have 7 tds (Monday to Sunday), if only 5 tds, it means 2 are occupied, should start from Tuesday
-    const expectedTds = 7; // Expected td count (excluding time column)
-    const actualTds = tds.length ; // Actual td count (excluding time column)
-    const missingTds = expectedTds - actualTds; // Missing td count
+    // Get actual td count (excluding time column)
+    const actualTds = tds.length - 1; // Subtract time column
     
-    // Record current row course occupancy
-    let currentRowOccupancy = 0;
+    // Calculate which weekdays are available for this row
+    // Start with all weekdays and remove those affected by previous spans
+    let availableWeekdays = [...weekDays];
+    
+    // Check if this row is affected by previous spans from timeSlotOccupancy
+    if (timeSlotOccupancy && timeSlotOccupancy.size > 0) {
+        // Get all previous spans that affect this row
+        const previousSpans = Array.from(timeSlotOccupancy.entries());
+        
+        // For each previous span, remove the affected weekdays
+        previousSpans.forEach(([timeSlot, spanInfos]) => {
+            // spanInfos is now an array of spans
+            if (Array.isArray(spanInfos)) {
+                spanInfos.forEach(spanInfo => {
+                    if (spanInfo.affectedWeekdays && spanInfo.remainingRows > 0) {
+                        spanInfo.affectedWeekdays.forEach(weekday => {
+                            const index = availableWeekdays.indexOf(weekday);
+                            if (index !== -1) {
+                                availableWeekdays.splice(index, 1);
+                            }
+                        });
+                        // Decrease the remaining rows count
+                        spanInfo.remainingRows--;
+                    }
+                });
+            }
+        });
+    }
+    
+    // If we have fewer available weekdays than actual tds, adjust
+    if (availableWeekdays.length < actualTds) {
+        // This shouldn't happen in normal cases, but handle it gracefully
+        availableWeekdays = availableWeekdays.slice(0, actualTds);
+    }
+    
+    // Track current spans for this row (multiple courses can have spans)
+    let currentSpans = [];
+    let dayIdx = 0;
     
     for (let i = 0; i < tds.length; i++) {
         const td = tds[i];
@@ -119,13 +176,25 @@ function processTableRowWithOccupancy(tr, weekDays, seenCourses, timeSlotOccupan
         
         // Process course cells
         if (td.className.includes('uoa_cal_ENRL_stat')) {
-            dayIdx++;
-            currentRowOccupancy++;
+            // Get the weekday for this position
+            const currentWeekday = availableWeekdays[dayIdx] || 'Unknown';
             
-            // Calculate correct weekday index: start from missing td count
-            const adjustedDayIdx = dayIdx + missingTds;
+            // Get span attribute (rowspan, not colspan)
+            const span = td.getAttribute('rowspan');
+            const spanValue = span ? parseInt(span) : 1;
             
-            const courseData = extractCourseFromCellSimple(td, adjustedDayIdx, weekDays);
+            // If this cell has a span, record it for future rows
+            if (spanValue > 1) {
+                const spanInfo = {
+                    spanValue: spanValue,
+                    startWeekday: currentWeekday,
+                    affectedWeekdays: [currentWeekday], // Only affect the current weekday
+                    remainingRows: spanValue - 1 // Track how many more rows this span affects
+                };
+                currentSpans.push(spanInfo);
+            }
+            
+            const courseData = extractCourseFromCellSimple(td, dayIdx, availableWeekdays);
             
             if (courseData) {
                 // Create unique identifier for deduplication
@@ -136,15 +205,17 @@ function processTableRowWithOccupancy(tr, weekDays, seenCourses, timeSlotOccupan
                     rowCourses.push(courseData);
                 }
             }
+            
+            dayIdx++;
         } else {
-            // If not a course cell, still increment date index
+            // If not a course cell, still increment day index
             dayIdx++;
         }
     }
     
-    // Update time slot occupancy (record missing td count)
-    if (currentTime && missingTds > 0) {
-        timeSlotOccupancy.set(currentTime, missingTds);
+    // Update time slot occupancy with span information
+    if (currentTime && currentSpans.length > 0) {
+        timeSlotOccupancy.set(currentTime, currentSpans);
     }
     
     return rowCourses;
@@ -189,7 +260,7 @@ function processTableRow(tr, headerMap, weekDays, seenCourses) {
 }
 
 // Extract course information from single cell (simplified version, no header mapping dependency)
-function extractCourseFromCellSimple(td, dayIdx, weekDays) {
+function extractCourseFromCellSimple(td, dayIdx, availableWeekdays) {
     // Find course link
     let link = td.querySelector('a');
     if (!link) {
@@ -209,8 +280,8 @@ function extractCourseFromCellSimple(td, dayIdx, weekDays) {
     
     if (lines.length < 4) return null;
     
-    // Directly use index to calculate weekday
-    let weekday = weekDays[dayIdx] || 'Unknown';
+    // Use the available weekdays array to get the correct weekday
+    let weekday = availableWeekdays[dayIdx] || 'Unknown';
     
     return {
         time: lines[0],
@@ -256,176 +327,5 @@ function extractCourseFromCell(td, dayIdx, headerMap, weekDays) {
     };
 }
 
-// Debug page structure function
-function debugPageStructure() {
-    const debugInfo = {
-        totalCells: 0,
-        courseCells: 0,
-        cellsWithSpan: 0,
-        cellsWithLinks: 0,
-        sampleData: [],
-        weekdays: []
-    };
-    
-    // Count all table cells
-    const allCells = document.querySelectorAll('td');
-    debugInfo.totalCells = allCells.length;
-    
-    // Find course tables
-    const courseTables = document.querySelectorAll('table.uoa_gridborder_cal');
-    const weekDays = ['MO', 'TU', 'WE', 'TH', 'FR', 'SA', 'SU'];
-    
-    courseTables.forEach(table => {
-        // Record course occupancy for each time slot
-        const timeSlotOccupancy = new Map(); // Store time slot to occupied td count mapping
-        
-        const rows = table.querySelectorAll('tr');
-        
-        rows.forEach(tr => {
-            processTableRowForDebugWithOccupancy(tr, weekDays, debugInfo, timeSlotOccupancy);
-        });
-    });
-    
-    return debugInfo;
-}
 
-// Process single table row for debugging (calculate weekday by td count)
-function processTableRowForDebugWithOccupancy(tr, weekDays, debugInfo, timeSlotOccupancy) {
-    const tds = tr.querySelectorAll('td');
-    let dayIdx = -1;
-    
-    // Get current row time information
-    const timeCell = tr.querySelector('td.uoa_timecol_cal span');
-    const currentTime = timeCell ? timeCell.textContent.trim() : '';
-    
-    // Calculate the starting weekday for current row
-    // Each tr should have 7 tds (Monday to Sunday), if only 5 tds, it means 2 are occupied, should start from Tuesday
-    const expectedTds = 7; // Expected td count (excluding time column)
-    const actualTds = tds.length - 1; // Actual td count (excluding time column)
-    const missingTds = expectedTds - actualTds; // Missing td count
-    
-    for (let i = 0; i < tds.length; i++) {
-        const td = tds[i];
-        
-        if (td.className.includes('uoa_timecol_cal')) {
-            continue;
-        }
-        
-        if (td.className.includes('uoa_cal_ENRL_stat')) {
-            dayIdx++;
-            debugInfo.courseCells++;
-            
-            // Check if there's a span
-            if (td.querySelector('span')) {
-                debugInfo.cellsWithSpan++;
-            }
-            
-            // Check if there's a link
-            let link = td.querySelector('a');
-            if (!link) {
-                const span = td.querySelector('span');
-                if (span) {
-                    link = span.querySelector('a');
-                }
-            }
-            
-            if (link) {
-                debugInfo.cellsWithLinks++;
-                
-                // Calculate correct weekday index: start from missing td count
-                const adjustedDayIdx = dayIdx + missingTds;
-                let weekday = weekDays[adjustedDayIdx] || 'Unknown';
-                
-                if (!debugInfo.weekdays.includes(weekday)) {
-                    debugInfo.weekdays.push(weekday);
-                }
-                
-                // Try to parse course data
-                let html = link.innerHTML;
-                html = html.replace(/<br\s*\/?>/gi, '|||');
-                html = html.replace(/<[^>]+>/g, '');
-                const lines = html.split('|||').map(line => line.trim()).filter(line => line.length > 0);
-                
-                if (lines.length >= 4 && debugInfo.sampleData.length < 3) {
-                    debugInfo.sampleData.push({
-                        time: lines[0],
-                        code: lines[1].replace(/\s+/g, ' '),
-                        room: lines[2],
-                        building: lines[3],
-                        weekday: weekday
-                    });
-                }
-            }
-        } else {
-            dayIdx++;
-        }
-    }
-    
-    // Update time slot occupancy (record missing td count)
-    if (currentTime && missingTds > 0) {
-        timeSlotOccupancy.set(currentTime, missingTds);
-    }
-}
-
-// Process single table row for debugging (backward compatibility)
-function processTableRowForDebug(tr, headerMap, weekDays, debugInfo) {
-    const tds = tr.querySelectorAll('td');
-    let dayIdx = -1;
-    
-    for (let i = 0; i < tds.length; i++) {
-        const td = tds[i];
-        
-        if (td.className.includes('uoa_timecol_cal')) {
-            continue;
-        }
-        
-        if (td.className.includes('uoa_cal_ENRL_stat')) {
-            dayIdx++;
-            debugInfo.courseCells++;
-            
-            // Check if there's a span
-            if (td.querySelector('span')) {
-                debugInfo.cellsWithSpan++;
-            }
-            
-            // Check if there's a link
-            let link = td.querySelector('a');
-            if (!link) {
-                const span = td.querySelector('span');
-                if (span) {
-                    link = span.querySelector('a');
-                }
-            }
-            
-            if (link) {
-                debugInfo.cellsWithLinks++;
-                
-                // Use header mapping to get weekday, fallback to default index if no mapping
-                let weekday = headerMap.get(dayIdx) || weekDays[dayIdx] || 'Unknown';
-                
-                if (!debugInfo.weekdays.includes(weekday)) {
-                    debugInfo.weekdays.push(weekday);
-                }
-                
-                // Try to parse course data
-                let html = link.innerHTML;
-                html = html.replace(/<br\s*\/?>/gi, '|||');
-                html = html.replace(/<[^>]+>/g, '');
-                const lines = html.split('|||').map(line => line.trim()).filter(line => line.length > 0);
-                
-                if (lines.length >= 4 && debugInfo.sampleData.length < 3) {
-                    debugInfo.sampleData.push({
-                        time: lines[0],
-                        code: lines[1].replace(/\s+/g, ' '),
-                        room: lines[2],
-                        building: lines[3],
-                        weekday: weekday
-                    });
-                }
-            }
-        } else {
-            dayIdx++;
-        }
-    }
-}
 

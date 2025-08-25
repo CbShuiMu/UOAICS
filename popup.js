@@ -5,7 +5,6 @@ let extractedCourses = [];
 const statusEl = document.getElementById('status');
 const loadingEl = document.getElementById('loading');
 const extractBtn = document.getElementById('extractBtn');
-const debugBtn = document.getElementById('debugBtn');
 const exportBtn = document.getElementById('exportBtn');
 const courseInfoEl = document.getElementById('courseInfo');
 const courseListEl = document.getElementById('courseList');
@@ -49,6 +48,8 @@ extractBtn.addEventListener('click', async () => {
         // Get current active tab
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
         
+        console.log('Current tab:', tab);
+        
         // Check if on correct website
         if (!tab.url.includes('student.auckland.ac.nz')) {
             updateStatus('Please navigate to the UOA student portal first', 'error');
@@ -56,16 +57,47 @@ extractBtn.addEventListener('click', async () => {
             return;
         }
         
-        // Send message to content script to extract course data
-        const response = await chrome.tabs.sendMessage(tab.id, { action: 'extractCourses' });
-        
-        if (response && response.success && response.courses) {
-            extractedCourses = response.courses;
-            updateStatus(`Found ${extractedCourses.length} courses`, 'success');
-            displayCourses(extractedCourses);
-            exportBtn.disabled = false;
-        } else {
-            updateStatus('No course data found on this page', 'error');
+        // Check if content script is loaded
+        try {
+            // Send message to content script to extract course data
+            const response = await chrome.tabs.sendMessage(tab.id, { action: 'extractCourses' });
+            
+            if (response && response.success && response.courses) {
+                extractedCourses = response.courses;
+                updateStatus(`Found ${extractedCourses.length} courses`, 'success');
+                displayCourses(extractedCourses);
+                exportBtn.disabled = false;
+            } else {
+                updateStatus('No course data found on this page', 'error');
+            }
+        } catch (messageError) {
+            console.error('Message error:', messageError);
+            
+            // Try to inject content script manually
+            try {
+                await chrome.scripting.executeScript({
+                    target: { tabId: tab.id },
+                    files: ['content.js']
+                });
+                
+                // Wait a moment for script to load
+                await new Promise(resolve => setTimeout(resolve, 100));
+                
+                // Try sending message again
+                const response = await chrome.tabs.sendMessage(tab.id, { action: 'extractCourses' });
+                
+                if (response && response.success && response.courses) {
+                    extractedCourses = response.courses;
+                    updateStatus(`Found ${extractedCourses.length} courses`, 'success');
+                    displayCourses(extractedCourses);
+                    exportBtn.disabled = false;
+                } else {
+                    updateStatus('No course data found on this page', 'error');
+                }
+            } catch (injectionError) {
+                console.error('Injection error:', injectionError);
+                updateStatus('Failed to load content script. Please refresh the page and try again.', 'error');
+            }
         }
     } catch (error) {
         console.error('Error extracting courses:', error);
@@ -106,46 +138,7 @@ exportBtn.addEventListener('click', async () => {
     }
 });
 
-// Debug page structure button event
-debugBtn.addEventListener('click', async () => {
-    setLoading(true);
-    updateStatus('Analyzing page structure...', 'info');
-    
-    try {
-        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        
-        // Send message to content script to debug page structure
-        const response = await chrome.tabs.sendMessage(tab.id, { action: 'debugPageStructure' });
-        
-        if (response && response.success && response.debugInfo) {
-            const debugInfo = response.debugInfo;
-            updateStatus(`Found ${debugInfo.totalCells} total cells, ${debugInfo.courseCells} course cells`, 'success');
-            
-            // Display debug information
-            courseListEl.innerHTML = `
-                <div class="course-item">
-                    <strong>Debug Information:</strong><br>
-                    Total table cells: ${debugInfo.totalCells}<br>
-                    Course cells found: ${debugInfo.courseCells}<br>
-                    Cells with span: ${debugInfo.cellsWithSpan}<br>
-                    Cells with links: ${debugInfo.cellsWithLinks}<br>
-                    Weekdays found: ${debugInfo.weekdays.join(', ')}<br>
-                    <br>
-                    <strong>Sample Course Data:</strong><br>
-                    ${debugInfo.sampleData.map(item => 
-                        `${item.time} | ${item.code} | ${item.room} | ${item.building} | ${item.weekday}`
-                    ).join('<br>')}
-                </div>
-            `;
-            courseInfoEl.style.display = 'block';
-        }
-    } catch (error) {
-        console.error('Error debugging page:', error);
-        updateStatus('Error analyzing page: ' + error.message, 'error');
-    } finally {
-        setLoading(false);
-    }
-});
+
 
 
 
